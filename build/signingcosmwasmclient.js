@@ -52,16 +52,24 @@ class SigningCosmWasmClient extends cosmwasmclient_1.CosmWasmClient {
      * @param apiUrl The URL of a Cosmos SDK light client daemon API (sometimes called REST server or REST API)
      * @param senderAddress The address that will sign and send transactions using this instance
      * @param signer An asynchronous callback to create a signature for a given transaction. This can be implemented using secure key stores that require user interaction. Or a newer OfflineSigner type that handles that stuff
-     * @param seed
+     * @param seedOrEnigmaUtils
      * @param customFees The fees that are paid for transactions
      * @param broadcastMode Defines at which point of the transaction processing the postTx method (i.e. transaction broadcasting) returns
      */
-    constructor(apiUrl, senderAddress, signer, seed, customFees, broadcastMode = restclient_1.BroadcastMode.Block) {
-        super(apiUrl, seed, broadcastMode);
+    constructor(apiUrl, senderAddress, signer, seedOrEnigmaUtils, customFees, broadcastMode = restclient_1.BroadcastMode.Block) {
+        if (seedOrEnigmaUtils instanceof Uint8Array) {
+            super(apiUrl, seedOrEnigmaUtils, broadcastMode);
+        }
+        else {
+            super(apiUrl, undefined, broadcastMode);
+        }
         this.anyValidAddress = senderAddress;
         this.senderAddress = senderAddress;
         //this.signCallback = signCallback ? signCallback : undefined;
         this.signer = signer;
+        if (seedOrEnigmaUtils && !(seedOrEnigmaUtils instanceof Uint8Array)) {
+            this.restClient.enigmautils = seedOrEnigmaUtils;
+        }
         this.fees = Object.assign(Object.assign({}, defaultFees), (customFees || {}));
     }
     async getNonce(address) {
@@ -70,14 +78,34 @@ class SigningCosmWasmClient extends cosmwasmclient_1.CosmWasmClient {
     async getAccount(address) {
         return super.getAccount(address || this.senderAddress);
     }
-    async signAdapter(signBytes) {
+    async signAdapter(msgs, fee, chainId, memo, accountNumber, sequence) {
         // offline signer interface
         if ("sign" in this.signer) {
-            return await this.signer.sign(this.senderAddress, signBytes);
+            const signResponse = await this.signer.sign(this.senderAddress, {
+                chain_id: chainId,
+                account_number: String(accountNumber),
+                sequence: String(sequence),
+                fee: fee,
+                msgs: msgs,
+                memo: memo,
+            });
+            return {
+                msg: msgs,
+                fee: signResponse.signed.fee,
+                memo: signResponse.signed.memo,
+                signatures: [signResponse.signature],
+            };
         }
         else {
             // legacy interface
-            return await this.signer(signBytes);
+            const signBytes = encoding_2.makeSignBytes(msgs, fee, chainId, memo, accountNumber, sequence);
+            const signature = await this.signer(signBytes);
+            return {
+                msg: msgs,
+                fee: fee,
+                memo: memo,
+                signatures: [signature],
+            };
         }
     }
     /** Uploads code and returns a receipt, including the code ID */
@@ -98,14 +126,7 @@ class SigningCosmWasmClient extends cosmwasmclient_1.CosmWasmClient {
         const fee = this.fees.upload;
         const { accountNumber, sequence } = await this.getNonce();
         const chainId = await this.getChainId();
-        const signBytes = encoding_2.makeSignBytes([storeCodeMsg], fee, chainId, memo, accountNumber, sequence);
-        const signature = await this.signAdapter(signBytes);
-        const signedTx = {
-            msg: [storeCodeMsg],
-            fee: fee,
-            memo: memo,
-            signatures: [signature],
-        };
+        const signedTx = await this.signAdapter([storeCodeMsg], fee, chainId, memo, accountNumber, sequence);
         const result = await this.postTx(signedTx);
         const codeIdAttr = logs_1.findAttribute(result.logs, "message", "code_id");
         return {
@@ -140,14 +161,7 @@ class SigningCosmWasmClient extends cosmwasmclient_1.CosmWasmClient {
         const fee = this.fees.init;
         const { accountNumber, sequence } = await this.getNonce();
         const chainId = await this.getChainId();
-        const signBytes = encoding_2.makeSignBytes([instantiateMsg], fee, chainId, memo, accountNumber, sequence);
-        const signature = await this.signAdapter(signBytes);
-        const signedTx = {
-            msg: [instantiateMsg],
-            fee: fee,
-            memo: memo,
-            signatures: [signature],
-        };
+        const signedTx = await this.signAdapter([instantiateMsg], fee, chainId, memo, accountNumber, sequence);
         const result = await this.postTx(signedTx);
         const contractAddressAttr = logs_1.findAttribute(result.logs, "message", "contract_address");
         const nonce = encoding_1.Encoding.fromBase64(instantiateMsg.value.init_msg).slice(0, 32);
@@ -177,14 +191,7 @@ class SigningCosmWasmClient extends cosmwasmclient_1.CosmWasmClient {
         const fee = this.fees.exec;
         const { accountNumber, sequence } = await this.getNonce();
         const chainId = await this.getChainId();
-        const signBytes = encoding_2.makeSignBytes([executeMsg], fee, chainId, memo, accountNumber, sequence);
-        const signature = await this.signAdapter(signBytes);
-        const signedTx = {
-            msg: [executeMsg],
-            fee: fee,
-            memo: memo,
-            signatures: [signature],
-        };
+        const signedTx = await this.signAdapter([executeMsg], fee, chainId, memo, accountNumber, sequence);
         const nonce = encoding_1.Encoding.fromBase64(executeMsg.value.msg).slice(0, 32);
         let result;
         try {
@@ -229,14 +236,7 @@ class SigningCosmWasmClient extends cosmwasmclient_1.CosmWasmClient {
         const fee = this.fees.send;
         const { accountNumber, sequence } = await this.getNonce();
         const chainId = await this.getChainId();
-        const signBytes = encoding_2.makeSignBytes([sendMsg], fee, chainId, memo, accountNumber, sequence);
-        const signature = await this.signAdapter(signBytes);
-        const signedTx = {
-            msg: [sendMsg],
-            fee: fee,
-            memo: memo,
-            signatures: [signature],
-        };
+        const signedTx = await this.signAdapter([sendMsg], fee, chainId, memo, accountNumber, sequence);
         return this.postTx(signedTx);
     }
 }
